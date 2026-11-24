@@ -18,7 +18,7 @@ from typing import Any
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import backup, paths, registry, selfcheck
+from . import backup, config, paths, registry, selfcheck
 from .session import Session, Turn, build_turn_payload, new_session_id, scratch_dir
 
 DEFAULT_WAIT = 600
@@ -150,6 +150,7 @@ async def _wait_turn(session: Session, turn: Turn, wait_seconds: float,
                 await ctx.report_progress(reported, None, f"turn {turn.number}: {msg}")
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(turn.done.wait(), min(PROGRESS_POLL, remaining))
+    selfcheck.invalidate_quota()  # the turn spent quota; read it afresh next time
     payload = build_turn_payload(session, turn)
     if payload["status"] != "SUCCESS" and "model" in (payload.get("error") or "").lower():
         with contextlib.suppress(Exception):
@@ -165,10 +166,45 @@ async def _wait_turn(session: Session, turn: Turn, wait_seconds: float,
     return payload
 
 
-def _first_message(message: str, session_id: str, cwd: str) -> str:
+ENVIRONMENT_RULE = (
+    "Running environment: reuse whatever is already running (dev servers, containers, "
+    "databases), as described above. Do not start, stop, restart or rebuild services, and "
+    "do not sync, import, reset or write to databases. If something you need isn't "
+    "running, ask in questions_for_claude instead of starting it.")
+
+
+def _first_message(message: str, session_id: str, cwd: str, sandbox: bool) -> str:
+    scratch = scratch_dir(session_id)
+    if sandbox:
+        mode = ("Sandbox: on. Shell commands can read the project but not write to it or "
+                "to its .git, so `git worktree add` fails. To experiment or to run tests "
+                f"that write files (caches, reports), use `git clone --local {cwd} "
+                f"{scratch}/clone` and work in the clone.")
+    else:
+        mode = ("Sandbox: off. Nothing stops a shell command from changing the project, so "
+                "only run commands that leave it as it is.")
     return (f"{message}\n\n---\nProject directory: {cwd}\n"
-            f"Your scratch directory for experiments: {scratch_dir(session_id)}\n"
-            "Do not modify files in the project directory.")
+            f"Your scratch directory for experiments: {scratch}\n"
+            "Do not modify files in the project directory.\n"
+            f"{mode}\n{ENVIRONMENT_RULE}")
+
+
+def _start_quota_check(model: str | None) -> asyncio.Task:
+    """Read the quota while the turn starts, so a warning costs no extra wait."""
+    async def check() -> list[str]:
+        try:
+            threshold = config.load().quota_warn_below
+            return selfcheck.quota_warnings(await selfcheck.quota(), model, threshold)
+        except Exception:  # quota is advice: never let it break a review
+            return []
+    return asyncio.create_task(check())
+
+
+async def _attach_quota(payload: dict[str, Any], check: asyncio.Task) -> dict[str, Any]:
+    with contextlib.suppress(Exception):
+        if warnings := await asyncio.wait_for(check, selfcheck.QUOTA_TIMEOUT + 5):
+            payload.setdefault("notes", {})["quota_warning"] = warnings
+    return payload
 
 
 @tool
@@ -180,8 +216,12 @@ async def agy_list_agents(refresh_models: bool = False) -> dict[str, Any]:
     """
     agents, models, version = await asyncio.gather(
         selfcheck.agents(), selfcheck.models(refresh_models), selfcheck.agy_version())
+    cfg = config.load()
     out = {"agents": agents, "models": models,
-           "efforts": ["low", "medium", "high", "xhigh", "max"], "agy_version": version}
+           "efforts": ["low", "medium", "high", "xhigh", "max"], "agy_version": version,
+           "default_model": cfg.default_model, "sandbox_default": cfg.sandbox}
+    with contextlib.suppress(Exception):
+        out["quota"] = await selfcheck.quota(refresh_models)
     if warning := selfcheck.version_warning(version):
         out["version_warning"] = warning
     return out
@@ -191,19 +231,25 @@ async def agy_list_agents(refresh_models: bool = False) -> dict[str, Any]:
 async def agy_start(agent: str, cwd: str, message: str, ctx: Context,
                     model: str | None = None, effort: str | None = None,
                     format: str = "review", schema: dict[str, Any] | None = None,
+                    sandbox: bool | None = None,
                     wait_seconds: float = DEFAULT_WAIT) -> dict[str, Any]:
     """Open a new AGY review session and send the first message.
 
     agent: an AGY agent, e.g. code-reviewer; agy_list_agents lists those installed.
     cwd: absolute path of the project to review (AGY runs there).
     message: what to review and why: diff or file/doc paths, intent, how to run tests.
-    model / effort: optional; omit to use AGY's default. See agy_list_agents.
+    model / effort: optional; omit to use the configured default_model (or AGY's own
+      default when none is set). See agy_list_agents.
     format: the answer format. "review" (default): verdict, summary, findings,
       questions_for_claude. "brainstorm", for planning and ideas: verdict
       (needs_discussion | ready), summary, stage, techniques_used, reframed_problem,
       assumptions (with their source), options (idea, gains, costs), recommendation,
       next_step, questions_for_claude.
     schema: optional custom JSON schema for the answer, instead of a format.
+    sandbox: omit to follow the user's config (on unless the project is listed in
+      sandbox_off_paths). On: the project is read-only to AGY's shell, but AGY can't
+      reach Local's databases or proxy-free localhost. Pass false only when the user
+      says so. Fixed for the life of the session.
     wait_seconds: how long to wait for the answer before returning status RUNNING
       (the turn keeps going; collect it with agy_wait).
     Returns the session_id, the review, and notes (denied actions, files AGY changed).
@@ -212,6 +258,9 @@ async def agy_start(agent: str, cwd: str, message: str, ctx: Context,
     if not project.is_dir():
         raise ValueError(f"cwd is not a directory: {cwd}")
     answer_schema = _answer_schema(format or "review", schema)
+    cfg = config.load()
+    model = model or cfg.default_model
+    use_sandbox = cfg.sandbox_for(str(project)) if sandbox is None else sandbox
     check = await selfcheck.check_agent(agent, str(project))
 
     session_id = new_session_id()
@@ -220,13 +269,16 @@ async def agy_start(agent: str, cwd: str, message: str, ctx: Context,
         "schema": answer_schema, "format": "custom" if schema else format or "review",
         "conversation_id": None,
         "created": registry.now_iso(), "last_used": registry.now_iso(), "turns": 0,
-        "agent_file": check.get("agent_file"),
+        "agent_file": check.get("agent_file"), "sandbox": use_sandbox,
     }
     registry.put(session_id, record)
     session = Session(session_id, record)
     SESSIONS[session_id] = session
-    turn = await session.send(_first_message(message, session_id, str(project)), model, effort)
-    payload = await _wait_turn(session, turn, wait_seconds, ctx)
+    quota_check = _start_quota_check(model)
+    turn = await session.send(_first_message(message, session_id, str(project), use_sandbox),
+                              model, effort)
+    payload = await _attach_quota(await _wait_turn(session, turn, wait_seconds, ctx),
+                                  quota_check)
     if check.get("version_warning"):
         payload.setdefault("notes", {})["agy_version"] = check["version_warning"]
     agent_file = check.get("agent_file")
@@ -260,8 +312,9 @@ async def agy_say(session_id: str, message: str, ctx: Context,
     if effort is None and (model is None or model == previous_model):
         effort = session.record.get("effort")  # a new model doesn't inherit the old effort
     model = model if model is not None else previous_model
+    quota_check = _start_quota_check(model)
     turn = await session.send(message, model, effort or None)
-    return await _wait_turn(session, turn, wait_seconds, ctx)
+    return await _attach_quota(await _wait_turn(session, turn, wait_seconds, ctx), quota_check)
 
 
 @tool
@@ -331,7 +384,8 @@ async def agy_resume(session_id: str | None = None, conversation_id: str | None 
                 "effort": None, "schema": REVIEW_SCHEMA, "format": "review",
                 "conversation_id": conversation_id,
                 "created": registry.now_iso(), "last_used": registry.now_iso(), "turns": 0,
-                "agent_file": check.get("agent_file")})
+                "agent_file": check.get("agent_file"),
+                "sandbox": config.load().sandbox_for(str(project))})
     session = _session(session_id)
     await session.ensure_process(session.record.get("model"), session.record.get("effort"))
     return session.status()

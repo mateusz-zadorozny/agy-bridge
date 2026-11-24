@@ -1,7 +1,37 @@
 # Configuration
 
-agy-bridge has no config file. It is set up through a few environment variables, the
+agy-bridge is set up through an optional config file, a few environment variables, the
 files `install` puts in place, and the agent files themselves.
+
+## The config file
+
+`~/.agy-bridge/config.json` (or `$AGY_BRIDGE_HOME/config.json`). Every key is optional;
+a missing file means the defaults. A file that isn't valid is an error, not ignored, so a
+typo can't silently drop a sandbox exception or a deny rule.
+
+```json
+{
+  "default_model": "gemini-4-neon-high",
+  "sandbox": true,
+  "sandbox_off_paths": ["~/LocalSites/shop", "~/Projects/api-with-docker"],
+  "deny_commands": [".*make deploy.*"],
+  "env_keep": [],
+  "quota_warn_below": 0.2
+}
+```
+
+| Key | Default | Effect |
+|---|---|---|
+| `default_model` | none | Model used when Claude names none. A slug with a level (`…-high`) needs no `effort`. |
+| `sandbox` | `true` | Run AGY with `--sandbox`: the project is read-only to its shell commands. |
+| `sandbox_off_paths` | `[]` | Projects (and everything under them) reviewed without the sandbox, because AGY must reach a running environment there. |
+| `deny_commands` | `[]` | Extra command rules, added to the built-in list. AGY matches them against the whole command, and its parser handles literal text, spaces and `.*` but not backslash escapes (`\s`, `\b`) or `\|` (AGY 1.5.16). Write `.*make deploy.*`. |
+| `env_keep` | `[]` | Environment variables to pass to AGY even though they look like credentials. |
+| `quota_warn_below` | `0.2` | Warn when a quota bucket of the model's group has less than this fraction left. |
+
+The file lives in the state folder, never in the reviewed project, on purpose: a project
+must not be able to switch off the sandbox it is reviewed under. The server reads it at
+each `agy_start`, so changes need no restart.
 
 ## Environment variables
 
@@ -74,15 +104,47 @@ fresh one is started.
 ## What AGY is allowed to do
 
 Each AGY process is started with settings for that session only. Your own AGY settings
-are not changed, so interactive AGY use is unaffected. The settings allow:
+are not changed, so interactive AGY use is unaffected. The settings:
 
-- **Shell commands**: any. A reviewer needs to run tests, linters and builds.
+- **Agent mode**: AGY's Default mode (`"agentMode": ""`). Since AGY made Auto the default,
+  Auto would approve file edits in the project whatever the rules below say.
+- **Shell commands**: any, except the deny list. A reviewer needs to run tests, linters
+  and builds.
+- **Deny list**: remote access and production tools (`ssh`, `scp`, `rsync`, `gp`, `gh`,
+  `git push`, `mysql`, writing `wp db`/`wp search-replace`, `docker … down/stop/rm`),
+  plus, without the sandbox, git commands that rewrite the project (`checkout`, `reset`,
+  `stash`, `commit`…). A denied command returns an error to AGY; the turn goes on.
 - **File-writing tools**: only inside the session's scratch folder.
+- **Sandbox** (`--sandbox`, unless switched off): shell commands can read the project
+  but not write to it.
+
+AGY's environment has credential-like variables removed (`*TOKEN*`, `*SECRET*`,
+`SSH_AUTH_SOCK`, `AWS_*`, `CLOUDFLARE_*`…), and `~/.agy-bridge/shims` comes first on its
+`PATH`, where `ssh`, `scp`, `sftp`, `rsync`, `gp` and `gh` are scripts that refuse, and
+`git` refuses `push` and runs the real git for everything else.
 
 Anything outside these rules that AGY would normally ask you to approve is denied, since
-nobody is there to approve it. AGY reports what was denied, and agy-bridge asks it once
-to carry on without it. agy-bridge never passes
+nobody is there to approve it. AGY reports what was denied, and agy-bridge asks it up to
+three times to carry on without it. agy-bridge never passes
 `--dangerously-skip-permissions`.
+
+The deny list and shims catch mistakes, not attacks: `bash -c`, an absolute path or a
+script can get round a regex. The sandbox is the real limit.
+
+### Sandbox on or off
+
+| | Sandbox on (default) | Sandbox off |
+|---|---|---|
+| Shell writes to the project | blocked by the OS | possible; detected afterwards |
+| `git worktree add` | blocked (writes the project's `.git`) | allowed |
+| Experiments | `git clone --local` into scratch | worktree or clone |
+| Local's MySQL sockets (`~/Library/Application Support`) | blocked | reachable |
+| Dev servers on localhost | through AGY's proxy; may fail | reachable |
+| Tests that write caches into the project | fail; run them in the clone | work |
+
+Switch it off per project with `sandbox_off_paths`, or for one session when you ask Claude
+to (`agy_start(…, sandbox: false)`). A session keeps its choice when resumed. Every
+result says `"sandbox": "on"` or `"off"`.
 
 Shell commands can still change files. The agent's instructions forbid changing the
 project, and the bridge detects and backs up, as described in the [user guide](user-guide.md#reading-the-result).
@@ -90,9 +152,17 @@ See [SECURITY.md](../SECURITY.md) for what that does and does not protect agains
 
 ## Models and effort
 
-agy-bridge itself has no default model. The Claude skill tells Claude to use a medium
-effort level by default, on a model from your AGY's list; if no model is passed, AGY uses
-its own default. The model list comes from `agy models` and is cached for a day; ask Claude
+Set `default_model` in the config file to pick the model used when Claude names none.
+Without it, the Claude skill tells Claude to use a medium effort level on a model from
+your AGY's list; if no model is passed, AGY uses its own default.
+
+## Quota
+
+At each `agy_start` and `agy_say` the bridge reads AGY's quota (`agy -p /quota`: about
+3 seconds, no tokens, run alongside the turn's start). If a bucket of the chosen model's
+group (Gemini, or Claude and GPT) is below `quota_warn_below`, the result carries
+`notes.quota_warning` with the percentage and reset time, and Claude tells you. It never
+blocks a review. `agy_list_agents` shows the full quota. The model list comes from `agy models` and is cached for a day; ask Claude
 to "refresh the AGY model list" after AGY adds models.
 
 ## Answer formats

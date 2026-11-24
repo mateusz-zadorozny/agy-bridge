@@ -21,9 +21,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import backup, paths, registry, tree
+from . import backup, config, paths, policy, registry, tree
 
 STREAM_LIMIT = 32 * 1024 * 1024
+# A denied file write ends AGY's turn with an empty answer. Under the stricter policy that
+# happens more often, so AGY is nudged to carry on a few times before the turn is given up.
+MAX_FOLLOWUPS = 3
 DENIED_FOLLOWUP = ("These actions were denied by policy in your last step: {actions}. "
                    "Continue the review without them and give your answer.")
 
@@ -36,10 +39,10 @@ def scratch_dir(session_id: str) -> Path:
     return paths.SCRATCH_DIR / session_id
 
 
-def reviewer_settings(session_id: str) -> str:
-    """Per-session AGY settings: any command, file-writing tools only in scratch."""
-    scratch = scratch_dir(session_id)
-    return json.dumps({"permissions": {"allow": ["command(regex:.*)", f"write_file({scratch}/)"]}})
+def session_sandbox(record: dict[str, Any], cfg: config.Config) -> bool:
+    """The session's sandbox choice; sessions recorded before it existed follow the config."""
+    value = record.get("sandbox")
+    return cfg.sandbox_for(record["cwd"]) if value is None else bool(value)
 
 
 def _step_label(step: dict[str, Any], cwd: str) -> str:
@@ -128,12 +131,14 @@ class Session:
         registry.claim(self.id, os.getpid())  # raises SessionInUse if another bridge has it
         scratch_dir(self.id).mkdir(parents=True, exist_ok=True)
         self.denied_seen = []  # AGY's list starts afresh with each process
+        cfg = config.load()
+        sandbox = session_sandbox(rec, cfg)
         args = [paths.agy_binary(),
                 "--input-format", "stream-json", "--output-format", "stream-json",
                 "--agent", rec["agent"],
                 "--json-schema", json.dumps(rec["schema"]),
-                "--settings", reviewer_settings(self.id),
-                "--disable-slash-commands"]
+                "--settings", policy.settings(cfg, str(scratch_dir(self.id)), sandbox),
+                "--disable-slash-commands", *policy.flags(sandbox)]
         if rec.get("conversation_id"):
             args += ["--conversation", rec["conversation_id"]]
         if model:
@@ -142,7 +147,7 @@ class Session:
             args += ["--effort", effort]
         self._log("spawn", {"args": args[1:], "cwd": rec["cwd"]})
         self.proc = await asyncio.create_subprocess_exec(
-            *args, cwd=rec["cwd"], limit=STREAM_LIMIT,
+            *args, cwd=rec["cwd"], limit=STREAM_LIMIT, env=policy.environment(cfg),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
         self.proc_args = (model, effort, rec["schema"])
@@ -254,10 +259,10 @@ class Session:
         new = denied[len(self.denied_seen):] if len(denied) >= len(self.denied_seen) else denied
         self.denied_seen = list(denied)
         turn.denied_new.extend(new)
-        # A denied action ends the turn with nothing. Ask AGY once to carry on.
+        # A denied action ends the turn with nothing. Ask AGY to carry on.
         empty = (not (result.get("response") or "").strip()
                  and result.get("structured_output") is None and result.get("status") != "ERROR")
-        if new and empty and turn.followups < 1 and self.alive:
+        if new and empty and turn.followups < MAX_FOLLOWUPS and self.alive:
             turn.followups += 1
             names = {d.get("display_name") or d.get("action", "?") for d in new}
             actions = ", ".join(sorted(names))
@@ -368,6 +373,8 @@ def build_turn_payload(session: Session, turn: Turn) -> dict[str, Any]:
         out["review"] = review
     elif result.get("response"):
         out["response"] = result["response"]
+    if session.record.get("sandbox") is not None:
+        out["sandbox"] = "on" if session.record["sandbox"] else "off"
     out["duration_seconds"] = round((turn.ended or time.time()) - turn.started, 1)
     if result.get("usage"):
         out["usage"] = result["usage"]
@@ -376,7 +383,8 @@ def build_turn_payload(session: Session, turn: Turn) -> dict[str, Any]:
     if turn.denied_new:
         notes["denied_actions"] = turn.denied_new
         if turn.followups:
-            notes["auto_followup"] = "AGY was asked once to continue without the denied actions."
+            notes["auto_followup"] = (f"AGY was asked {turn.followups} time(s) to continue "
+                                      "without the denied actions.")
     if turn.tree_changes:
         notes["tree_changed"] = turn.tree_changes
         if turn.backup and ("files" in turn.tree_changes or "git" in turn.tree_changes):

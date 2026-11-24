@@ -14,7 +14,9 @@ trade-off and limits the damage as follows:
 
 | Risk | What agy-bridge does |
 |---|---|
-| AGY edits the project with its file tools | Those tools are allowed only in the session's scratch folder. Any other write is denied and reported. |
+| AGY edits the project with its file tools | AGY runs in Default mode, so the rule that allows those tools only in the scratch folder holds (Auto mode, AGY's new default, approved such writes). Any other write is denied and reported. |
+| AGY edits the project through a shell command, with the sandbox on | The OS sandbox refuses writes to the project and its `.git`. |
+| AGY reaches production (`ssh`, `gp`, `rsync`) or pushes | Denied by rule, refused by PATH shims, and `SSH_AUTH_SOCK` and token variables are removed from AGY's environment. A command built to dodge the rules (absolute path, `bash -c` with an encoded name) can still get through with the sandbox off. |
 | AGY edits the project through a shell command, or a test writes files | The agent's rules forbid it. The bridge snapshots the project before and after each turn and reports every change to Claude, which tells you. |
 | Uncommitted work is lost, e.g. by `git reset --hard` or `git clean` | Before each turn the bridge backs up tracked changes as a patch, plus copies of untracked and newly added files. When a turn changes the project, its result carries a restore recipe. |
 | AGY approves its own risky action | agy-bridge never passes `--dangerously-skip-permissions`. Anything the session's settings don't allow is denied. |

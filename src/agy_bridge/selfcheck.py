@@ -25,7 +25,7 @@ from . import paths
 MODELS_TTL = 24 * 3600
 # AGY versions agy-bridge has been run against. Others usually work, but AGY's CLI,
 # tool names and event format are young and change between releases.
-TESTED_AGY_VERSIONS = ("1.5.1", "1.5.2")
+TESTED_AGY_VERSIONS = ("1.5.1", "1.5.2", "1.5.16")
 
 
 def _load_cache() -> dict[str, Any]:
@@ -193,3 +193,64 @@ async def check_agent(name: str, cwd: str) -> dict[str, Any]:
         raise ValueError(f"Agent '{name}' ({agent_file}) must list the `finish` tool, "
                          "or AGY returns no structured_output.")
     return {**info, "agent_file": str(agent_file), "checked": True}
+
+
+# ----- quota -------------------------------------------------------------------------
+
+QUOTA_TTL = 600
+QUOTA_TIMEOUT = 15
+_quota: tuple[float, list[dict[str, Any]]] | None = None
+
+
+async def quota(refresh: bool = False) -> list[dict[str, Any]]:
+    """AGY's quota buckets from `agy -p /quota`: instant, no tokens, no conversation.
+
+    Returns [{"group", "models", "buckets": [{"id", "window", "remaining", "reset_time"}]}].
+    Kept in memory for QUOTA_TTL and dropped after every turn (see invalidate_quota).
+    """
+    global _quota
+    if _quota and not refresh and time.time() - _quota[0] < QUOTA_TTL:
+        return _quota[1]
+    paths.ensure_dirs()
+    _, out, _ = await _run("-p", "/quota", "--output-format", "json",
+                           timeout=QUOTA_TIMEOUT, cwd=str(paths.STATE_DIR))
+    data = (json.loads(out).get("command") or {}).get("data") or {}
+    groups = [{"group": g.get("name", "?"), "models": g.get("description", ""),
+               "buckets": [{"id": b.get("id", ""), "window": b.get("window", ""),
+                            "remaining": b.get("remaining_fraction"),
+                            "reset_time": b.get("reset_time")}
+                           for b in g.get("buckets") or []]}
+              for g in data.get("groups") or []]
+    _quota = (time.time(), groups)
+    return groups
+
+
+def invalidate_quota() -> None:
+    global _quota
+    _quota = None
+
+
+def quota_family(model: str | None) -> str | None:
+    """The bucket-id prefix of a model's quota group, or None when it can't be told."""
+    if not model:
+        return None
+    if model.startswith("gemini-"):
+        return "gemini"
+    if model.startswith(("claude-", "gpt-")):
+        return "3p"
+    return None
+
+
+def quota_warnings(groups: list[dict[str, Any]], model: str | None,
+                   threshold: float) -> list[str]:
+    """One line per bucket below `threshold`, for the model's group (all groups if unknown)."""
+    family = quota_family(model)
+    out = []
+    for g in groups:
+        for b in g["buckets"]:
+            if family and not b["id"].startswith(family + "-"):
+                continue
+            if isinstance(b["remaining"], int | float) and b["remaining"] < threshold:
+                out.append(f"{g['group']}: {b['window'] or b['id']} limit at "
+                           f"{b['remaining']:.0%}, resets {b['reset_time']}")
+    return out

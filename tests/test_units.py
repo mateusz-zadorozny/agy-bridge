@@ -15,7 +15,7 @@ import pytest
 from conftest import git
 
 from agy_bridge import backup, paths, registry, selfcheck, tree
-from agy_bridge.session import parse_json_response, reviewer_settings
+from agy_bridge.session import parse_json_response
 
 # ----- registry ---------------------------------------------------------------------
 
@@ -360,6 +360,3 @@ def test_parse_json_response_none() -> None:
     assert parse_json_response("no json here") is None
 
 
-def test_reviewer_settings_scope_writes_to_scratch(state: Path) -> None:
-    allow = __import__("json").loads(reviewer_settings("abc"))["permissions"]["allow"]
-    assert allow == ["command(regex:.*)", f"write_file({paths.SCRATCH_DIR / 'abc'}/)"]

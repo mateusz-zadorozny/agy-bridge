@@ -11,7 +11,7 @@ You need:
 - **Python 3.11 or newer** and **[uv](https://docs.astral.sh/uv/)**.
 - **macOS or Linux.** Windows is not supported (the session registry uses POSIX file locks).
 
-agy-bridge is tested with AGY 1.5.1 and 1.5.2. Newer versions usually work. If yours has
+agy-bridge is tested with AGY 1.5.1, 1.5.2 and 1.5.16. Newer versions usually work. If yours has
 not been tested, `agy-bridge doctor` and the first review say so.
 
 ## Option 1: from a clone (recommended)

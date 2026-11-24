@@ -31,7 +31,9 @@ Claude Code ──stdio MCP──▶ agy-bridge (one per Claude Code session)
 | `registry.py` | `sessions.json`, under a file lock: session records, process ownership, overlapping turns. |
 | `tree.py` | Snapshots of the project before and after a turn, and the diff between them. |
 | `backup.py` | The per-turn backup of uncommitted work. |
-| `selfcheck.py` | AGY's version, models and real tool list (cached), and the agent tool check. |
+| `selfcheck.py` | AGY's version, models, quota and real tool list (cached), and the agent tool check. |
+| `config.py` | The user's `config.json`: default model, sandbox choices, extra deny rules. |
+| `policy.py` | How a reviewer process may act: `--settings`, `--sandbox`, environment, shims. |
 | `paths.py` | Locations and environment variables. |
 | `cli.py` | `install`, `uninstall`, `doctor`, `serve`. |
 | `assets/` | The files `install` copies: the example agents, their skills, and the Claude skill. |
@@ -93,15 +95,23 @@ note when they differ.
 The AGY CLI uses the user's existing Antigravity sign-in and plan. The Python SDK
 would need a separate API key, and was a research preview at the time.
 
-**Write safety is prompt-guided, then detected and backed up; it is not enforced.**
+**Write safety: the OS sandbox where possible, then rules, detection and backup.**
 A useful reviewer runs tests, and tests are shell commands that can write anywhere.
-Blocking all writes would make AGY a much weaker reviewer, and AGY has no sandbox that
-allows test runs but forbids edits. So:
+AGY's `--sandbox` (newer than the original design) lets commands read the project and
+run but not write to it, which is what a reviewer needs; `policy.py` turns it on unless
+the user's config says a project needs its running environment. Then:
 
-- the agent's rules forbid changing the project;
+- AGY runs in Default mode (`"agentMode": ""`): measured on AGY 1.5.16, Auto mode, the
+  new default, approved a file write into the project despite the scratch-only rule;
 - file-writing tools work only in the scratch folder;
+- a deny list and PATH shims stop remote and destructive commands, and credentials are
+  removed from AGY's environment;
+- the agent's rules forbid changing the project;
 - every turn is snapshotted and backed up;
 - any change is reported to Claude, and through Claude to the user.
+
+The policy comes from `~/.agy-bridge/config.json`, never from the project, so a reviewed
+project can't loosen it.
 
 **Never `--dangerously-skip-permissions`.**
 Permissions come from per-session settings passed with `--settings`. Anything those

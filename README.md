@@ -72,7 +72,7 @@ short list to choose from before writing anything.
 ## Requirements
 
 - **AGY CLI**, installed and signed in. agy-bridge finds it at `~/.gemini/bin/agy`, on
-  `PATH`, or at `$AGY_BIN`. Tested with AGY 1.5.1 and 1.5.2.
+  `PATH`, or at `$AGY_BIN`. Tested with AGY 1.5.1, 1.5.2 and 1.5.16.
 - **Claude Code**, with the `claude` command on `PATH` (used to register the server).
 - **Python 3.11+** and [uv](https://docs.astral.sh/uv/).
 - **macOS or Linux.** Tested on macOS; Linux runs in CI. Windows is not supported.
@@ -135,6 +135,10 @@ that way, so agy-bridge also:
 - **detects** any change to the project during each turn and reports it to Claude, which
   tells you;
 - **backs up** your uncommitted work before each turn, so it can be restored;
+- runs AGY in its **sandbox** by default, where shell commands can't write to the project;
+- **denies** remote and destructive commands (`ssh`, `gp`, `git push`, `wp db reset`…)
+  and removes credentials from AGY's environment;
+- warns when your AGY **quota** runs low;
 - never runs AGY with `--dangerously-skip-permissions`.
 
 Read [SECURITY.md](SECURITY.md) before using it on code you can't afford to have touched.

@@ -24,9 +24,24 @@ def main() -> int:
     if a[:2] == ["mcp", "add"]:
         scope = a[a.index("--scope") + 1]
         sep = a.index("--")
+        opts, name, env, i = a[2:sep], None, {}, 0
+        while i < len(opts):  # like Claude Code: -e takes values up to the next option
+            if opts[i] == "--scope":
+                i += 2
+            elif opts[i] == "-e":
+                i += 1
+                while i < len(opts) and "=" in opts[i]:
+                    k, _, v = opts[i].partition("=")
+                    env[k] = v
+                    i += 1
+            else:
+                name = name or opts[i]
+                i += 1
         data = load(scope)
-        data.setdefault("mcpServers", {})[a[sep - 1]] = {
-            "type": "stdio", "command": a[sep + 1], "args": a[sep + 2:]}
+        server = {"type": "stdio", "command": a[sep + 1], "args": a[sep + 2:]}
+        if env:
+            server["env"] = env
+        data.setdefault("mcpServers", {})[name] = server
         config(scope).write_text(json.dumps(data))
         return 0
     if a[:2] == ["mcp", "remove"]:

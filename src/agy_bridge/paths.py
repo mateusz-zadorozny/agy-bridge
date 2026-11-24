@@ -12,6 +12,10 @@ SESSIONS_FILE = STATE_DIR / "sessions.json"
 LOG_DIR = STATE_DIR / "logs"
 SCRATCH_DIR = STATE_DIR / "scratch"
 CACHE_FILE = STATE_DIR / "cache.json"
+# The user's own settings. Never read from the reviewed project: a project must not be
+# able to loosen the policy it is reviewed under.
+CONFIG_FILE = STATE_DIR / "config.json"
+SHIMS_DIR = STATE_DIR / "shims"
 
 GEMINI_CONFIG_DIR = HOME / ".gemini" / "config"
 GLOBAL_AGENTS_DIR = GEMINI_CONFIG_DIR / "agents"

@@ -11,8 +11,12 @@ and `-p`. A user message steers each turn with directives:
   [[error MSG]]    end the turn with status ERROR
   [[text]]         answer in fenced JSON text instead of structured_output
 
+`-p /quota --output-format json` answers with a quota report whose buckets all have
+FAKE_AGY_QUOTA remaining (default 0.9).
+
 Environment: FAKE_AGY_VERSION (default 1.5.2), FAKE_AGY_STATE (folder for
-conversation history and the argv log, required for stream-json mode).
+conversation history and the argv log, required for stream-json mode). The argv log
+also records the names of the environment variables the process got and its PATH.
 """
 
 from __future__ import annotations
@@ -62,7 +66,9 @@ def stream(args: list[str]) -> None:
     state = Path(os.environ["FAKE_AGY_STATE"])
     state.mkdir(parents=True, exist_ok=True)
     with open(state / "argv.ndjson", "a") as f:
-        f.write(json.dumps({"argv": args, "cwd": os.getcwd(), "pid": os.getpid()}) + "\n")
+        f.write(json.dumps({"argv": args, "cwd": os.getcwd(), "pid": os.getpid(),
+                            "env": sorted(os.environ),
+                            "path": os.environ.get("PATH", "").split(os.pathsep)}) + "\n")
     conv = arg(args, "--conversation") or str(uuid.uuid4())
     history_file = state / f"{conv}.json"
     history = json.loads(history_file.read_text()) if history_file.exists() else []
@@ -129,6 +135,18 @@ def main() -> None:
         agents = Path.home() / ".gemini" / "config" / "agents"
         for f in sorted(agents.glob("*.md")) if agents.is_dir() else []:
             print(f.stem)
+    elif "-p" in args and arg(args, "-p") == "/quota":
+        left = float(os.environ.get("FAKE_AGY_QUOTA", "0.9"))
+        groups = [{"name": name, "description": f"Models within this group: {name}",
+                   "buckets": [{"id": f"{prefix}-{w}", "name": w, "window": w,
+                                "remaining_fraction": left,
+                                "reset_time": "2030-01-01T00:00:00Z"}
+                               for w in ("weekly", "5h")]}
+                  for name, prefix in (("Gemini Models", "gemini"),
+                                       ("Claude and GPT models", "3p"))]
+        print(json.dumps({"conversation_id": "", "status": "SUCCESS", "response": "",
+                          "usage": {"total_tokens": 0},
+                          "command": {"name": "usage", "data": {"groups": groups}}}))
     elif "-p" in args:
         conv = str(uuid.uuid4())
         emit(init_event(conv, args))

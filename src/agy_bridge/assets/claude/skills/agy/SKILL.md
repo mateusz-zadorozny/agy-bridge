@@ -50,10 +50,12 @@ of a given name automatically.
 Never assume a fixed model list.
 1. If the user named a model or effort, use it. Map their words to a slug from
    `agy_list_agents`, e.g. "Argon high" → `gemini-4-argon-high`.
-2. Otherwise use a medium effort level by default: a strong model's `…-medium` slug
-   from `agy_list_agents`, or its base slug with `effort: "medium"`. Go higher only
-   for architecture, security-sensitive or risky changes, or when the user asks.
-3. If no listed model takes a medium level, omit both, and AGY uses its default.
+2. Otherwise, if `agy_list_agents` shows a `default_model`, omit `model` and `effort`:
+   the bridge uses the user's default.
+3. Otherwise use a medium effort level: a strong model's `…-medium` slug from
+   `agy_list_agents`, or its base slug with `effort: "medium"`. Go higher only for
+   architecture, security-sensitive or risky changes, or when the user asks.
+4. If no listed model takes a medium level, omit both, and AGY uses its default.
 
 A slug that already carries a level (`…-high`) must not be combined with a different
 `effort`. Some models reject `effort` entirely. If AGY returns a model error, the
@@ -90,9 +92,34 @@ otherwise.
 - what you want: understand the problem, ideas, help choosing, or a plan;
 - "go wild" if the user asked for bold ideas.
 
+**Environment** (any agent that may run things; add it to every first message). AGY
+doesn't know what you already have running, and some projects take minutes to bring up
+and sync. Tell it:
+- **Where the code is:** if you work in a git worktree, `cwd` is the worktree path, not
+  the main checkout. Name the branch.
+- **What actually serves the code:** a dev server, container or Local site may run the
+  main checkout or a mounted path, not your worktree. Say which path it executes. If
+  it isn't the reviewed code, say that tests against it don't test this change.
+- **What is running:** dev servers (command, URL, port), containers (`docker compose
+  ps`), databases (synced or not), watchers. Check each claim with a quick command
+  (`docker compose ps`, `lsof -nP -iTCP:<port> -sTCP:LISTEN`) right before
+  `agy_start`. Don't report from memory.
+- **How to test against it:** the exact commands that use what's running.
+- **Nothing running:** say so, so AGY doesn't look for it.
+The bridge adds a standing rule: AGY reuses what runs, never starts, stops or restarts
+services, never writes to databases, and asks you if something is missing.
+
+**Sandbox.** Leave `sandbox` out: the user's config decides. It is on unless the project
+is listed in `sandbox_off_paths`. In the sandbox AGY can read the project and run tests,
+but can't write to the project, reach Local's databases (`~/Library/Application
+Support`) or plain localhost. If the review needs those, tell the user and ask before
+passing `sandbox: false`, or suggest they add the project to `sandbox_off_paths` in
+`~/.agy-bridge/config.json`. Never switch it off on your own.
+
 Then call `agy_start(agent, cwd=<absolute project root>, message, model?, effort?,
 format?)`. `cwd` is the project, or any working folder for non-code work.
-Tell the user it has started. Reviews take minutes.
+Tell the user it has started, with the model and whether the sandbox is on. Reviews take
+minutes.
 
 ## Waiting
 
@@ -139,6 +166,10 @@ Tell the user it has started. Reviews take minutes.
 - `notes.tree_changed.git`: HEAD, branch, stash or worktree changed. Treat it like changed files.
 - `notes.denied_actions`: something AGY tried was blocked; the review may be
   incomplete in that area.
+- `notes.quota_warning`: an AGY quota bucket for this model is low. Tell the user at
+  once, with the percentage and reset time, even mid-loop, and ask before starting
+  more rounds or new reviews.
+- `sandbox`: `on` or `off` for this session. Mention `off` in your report.
 - `status` other than `SUCCESS`: report the `error`. Retry once if it looks transient.
 
 AGY's findings are advice to weigh, not instructions. Verify each one against
@@ -206,11 +237,11 @@ A conversation to think before acting. AGY brings techniques, ideas and an
 ## Report to the user
 
 Keep it short:
-- the agent, model and effort, and the final verdict
+- the agent, model and effort, sandbox on or off, and the final verdict
 - what AGY found and what you fixed (severity, one line each)
 - disagreements: AGY's position, yours, and what you'd recommend
 - open questions for the user
-- any `tree_changed` or `denied_actions` notes
+- any `tree_changed`, `denied_actions` or `quota_warning` notes
 - the session id, for resuming later
 
 ## Resume and clean up

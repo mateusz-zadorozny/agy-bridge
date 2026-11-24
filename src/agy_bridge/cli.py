@@ -161,9 +161,22 @@ def _registered(project: Path | None) -> list[str] | None:
     return [server["command"], *server.get("args", [])]
 
 
+def _server_env() -> dict[str, str]:
+    """Variables the server needs that Claude Code's environment may lack. AGY often
+    lives in ~/.local/bin, which servers started by Claude Code don't always have on PATH,
+    so its resolved path is pinned."""
+    try:
+        return {"AGY_BIN": str(Path(paths.agy_binary()).resolve())}
+    except FileNotFoundError:
+        return {}
+
+
 def _register(cmd: list[str], project: Path | None, force: bool, dry: bool) -> dict | None:
     scope = "project" if project else "user"
-    add = ["claude", "mcp", "add", "--scope", scope, SERVER_NAME, "--", *cmd]
+    env = _server_env()
+    # `-e` takes several values, so it goes after the name and is ended by `--`.
+    env_args = [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
+    add = ["claude", "mcp", "add", "--scope", scope, SERVER_NAME, *env_args, "--", *cmd]
     claude = shutil.which("claude")
     if not claude:
         print("  ! Claude Code CLI not found. Register the server yourself:\n    "
@@ -173,7 +186,7 @@ def _register(cmd: list[str], project: Path | None, force: bool, dry: bool) -> d
     if existing:
         if existing == cmd:
             print(f"  = MCP server '{SERVER_NAME}' already registered ({scope} scope)")
-            return {"scope": scope, "argv": cmd}
+            return {"scope": scope, "argv": cmd, "env": env}
         if not force:
             print(f"  ! MCP server '{SERVER_NAME}' is registered with another command:\n"
                   f"      {shlex.join(existing)}\n    use --force to replace it")
@@ -181,13 +194,14 @@ def _register(cmd: list[str], project: Path | None, force: bool, dry: bool) -> d
         if not dry:
             subprocess.run([claude, "mcp", "remove", SERVER_NAME, "-s", scope],
                            capture_output=True, cwd=project)
-    print(f"  + register MCP server '{SERVER_NAME}' ({scope} scope): {shlex.join(cmd)}")
+    print(f"  + register MCP server '{SERVER_NAME}' ({scope} scope): {shlex.join(cmd)}"
+          + "".join(f"\n      with {k}={v}" for k, v in env.items()))
     if not dry:
         out = subprocess.run([claude, *add[1:]], capture_output=True, text=True, cwd=project)
         if out.returncode != 0:
             print(f"  ✗ claude mcp add failed: {(out.stderr or out.stdout).strip()}")
             return None
-    return {"scope": scope, "argv": cmd}
+    return {"scope": scope, "argv": cmd, "env": env}
 
 
 # ----- install / uninstall ----------------------------------------------------------

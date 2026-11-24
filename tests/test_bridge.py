@@ -368,3 +368,124 @@ def test_logging_is_opt_in_and_forget_cleans_up(installed: dict, repo: Path) -> 
     assert not (state / "backup" / sid).exists()
     assert not (state / "logs" / f"{sid}.ndjson").exists()
     assert sid not in json.loads((state / "sessions.json").read_text())
+
+
+# ----- policy, quota and environment (fork) ------------------------------------------
+
+def _config(env: dict, data: dict) -> None:
+    home = Path(env["AGY_BRIDGE_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.json").write_text(json.dumps(data))
+
+
+def _settings(argv: list[str]) -> dict:
+    return json.loads(argv[argv.index("--settings") + 1])
+
+
+def test_sandbox_and_default_mode_by_default(installed: dict, repo: Path) -> None:
+    async def go():
+        async with bridge(installed) as b:
+            return await start(b, repo)
+
+    out = run(go())
+    assert out["sandbox"] == "on"
+    argv = fake_argv(installed)[0]
+    assert "--sandbox" in argv
+    assert _settings(argv)["agentMode"] == ""
+    history = json.loads(next(Path(installed["FAKE_AGY_STATE"]).glob("*-*.json")).read_text())
+    assert "Sandbox: on" in history[0] and "git clone --local" in history[0]
+    assert "do not sync, import, reset or write to databases" in history[0]
+
+
+def test_sandbox_off_paths_and_resume_keep_the_choice(installed: dict, repo: Path) -> None:
+    _config(installed, {"sandbox_off_paths": [str(repo)]})
+
+    async def go():
+        async with bridge(installed) as b:
+            first = await start(b, repo)
+            await b.call("agy_end", session_id=first["session_id"])
+        _config(installed, {})  # the session keeps the choice it was started with
+        async with bridge(installed) as b:
+            again = await b.call("agy_say", session_id=first["session_id"], message="More.")
+        return first, again
+
+    first, again = run(go())
+    assert first["sandbox"] == "off" and again["sandbox"] == "off"
+    argvs = fake_argv(installed)
+    assert len(argvs) == 2 and all("--sandbox" not in a for a in argvs)
+    assert any("checkout" in r for r in _settings(argvs[0])["permissions"]["deny"])
+
+
+def test_explicit_sandbox_param_wins(installed: dict, repo: Path) -> None:
+    _config(installed, {"sandbox_off_paths": [str(repo)]})
+
+    async def go():
+        async with bridge(installed) as b:
+            return await start(b, repo, sandbox=True)
+
+    assert run(go())["sandbox"] == "on"
+    assert "--sandbox" in fake_argv(installed)[0]
+
+
+def test_default_model_from_config(installed: dict, repo: Path) -> None:
+    _config(installed, {"default_model": "gemini-fake-pro"})
+
+    async def go():
+        async with bridge(installed) as b:
+            listing = await b.call("agy_list_agents")
+            out = await start(b, repo)
+            return listing, out
+
+    listing, out = run(go())
+    assert listing["default_model"] == "gemini-fake-pro" and listing["sandbox_default"] is True
+    assert listing["quota"][0]["group"] == "Gemini Models"
+    argv = fake_argv(installed)[0]
+    assert argv[argv.index("--model") + 1] == "gemini-fake-pro"
+
+
+def test_quota_warning_when_low(installed: dict, repo: Path) -> None:
+    low = {**installed, "FAKE_AGY_QUOTA": "0.1"}
+
+    async def go():
+        async with bridge(low) as b:
+            first = await start(b, repo, model="gemini-fake-pro")
+            running = await start(b, repo, message="Slow. [[sleep 3]]", wait_seconds=1)
+            return first, running
+
+    first, running = run(go())
+    assert first["notes"]["quota_warning"] == [
+        "Gemini Models: weekly limit at 10%, resets 2030-01-01T00:00:00Z",
+        "Gemini Models: 5h limit at 10%, resets 2030-01-01T00:00:00Z"]
+    assert running["status"] == "RUNNING" and "quota_warning" in running["notes"]
+
+
+def test_no_quota_warning_when_plenty(installed: dict, repo: Path) -> None:
+    async def go():
+        async with bridge(installed) as b:
+            return await start(b, repo)
+
+    assert "notes" not in run(go())
+
+
+def test_agy_gets_no_credentials_and_shims_first(installed: dict, repo: Path) -> None:
+    from conftest import fake_spawns
+    leaky = {**installed, "GH_TOKEN": "x", "SSH_AUTH_SOCK": "/tmp/agent.sock"}
+
+    async def go():
+        async with bridge(leaky) as b:
+            return await start(b, repo)
+
+    run(go())
+    spawn = fake_spawns(leaky)[0]
+    assert "GH_TOKEN" not in spawn["env"] and "SSH_AUTH_SOCK" not in spawn["env"]
+    assert spawn["path"][0] == str(Path(installed["AGY_BRIDGE_HOME"]) / "shims")
+
+
+def test_broken_config_is_reported(installed: dict, repo: Path) -> None:
+    _config(installed, {"sandbox": "maybe"})
+
+    async def go():
+        async with bridge(installed) as b:
+            return await start(b, repo)
+
+    assert "sandbox" in run(go())["error"]

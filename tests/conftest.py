@@ -116,6 +116,15 @@ async def bridge(env: dict[str, str]) -> AsyncIterator[Bridge]:
         yield Bridge(s)
 
 
+def fake_spawns(env: dict[str, str]) -> list[dict]:
+    """Like fake_argv, but each entry also holds the process's env names and PATH."""
+    log = Path(env["FAKE_AGY_STATE"]) / "argv.ndjson"
+    if not log.exists():
+        return []
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    return [e for e in entries if "--agent" in e["argv"]]
+
+
 def fake_argv(env: dict[str, str]) -> list[list[str]]:
     """Every argv the fake agy was started with for a session, oldest first. The tool
     self-check's probe (a stream-json process with no --agent) is left out."""

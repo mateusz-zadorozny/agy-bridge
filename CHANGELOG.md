@@ -6,7 +6,36 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- AGY now runs in its Default agent mode (`"agentMode": ""`). On AGY 1.5.16, Auto mode,
+  AGY's new default, let the reviewer write files into the project despite the
+  scratch-only rule.
+- AGY runs with `--sandbox` by default, so its shell commands can't write to the
+  project. Projects that need a running environment can be listed in
+  `sandbox_off_paths`.
+- A deny list (`ssh`, `scp`, `rsync`, `gp`, `gh`, `git push`, `mysql`, destructive
+  `wp db` and `docker` commands; git commands that rewrite the project when the sandbox
+  is off), PATH shims for remote tools, and credential variables removed from AGY's
+  environment.
+
 ### Added
+
+- `~/.agy-bridge/config.json`: `default_model`, `sandbox`, `sandbox_off_paths`,
+  `deny_commands`, `env_keep`, `quota_warn_below`.
+- Quota warnings: `notes.quota_warning` when a bucket of the model's group runs low;
+  `agy_list_agents` shows the quota.
+- `agy_start(sandbox=…)`, kept for the life of the session; every result says
+  `"sandbox": "on"|"off"`.
+- The first message tells AGY to reuse the running environment and never restart
+  services or write to databases; the Claude skill describes worktree, served path and
+  running services to AGY, checked right before the review.
+- `install` registers the server with `AGY_BIN`, since AGY often lives in a folder Claude
+  Code's servers don't have on `PATH`.
+
+### Changed
+
+- A denied action now gets up to three follow-ups instead of one.
 
 - Docs: [the review method](docs/review-method.md) behind agy-bridge, why a different
   agent should review Claude Code's work and the four-stage loop the bridge runs, linked

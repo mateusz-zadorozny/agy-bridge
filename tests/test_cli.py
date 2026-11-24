@@ -33,6 +33,8 @@ def test_install_fills_in_paths_and_registers(env: dict) -> None:
     assert "{{" not in agent
     assert f"- {f['skill'].parent}\n" in agent
     assert registered(Path(env["HOME"]) / ".claude.json") == CMD.split()
+    server = json.loads((Path(env["HOME"]) / ".claude.json").read_text())["mcpServers"]["agy"]
+    assert server["env"] == {"AGY_BIN": str(Path(env["AGY_BIN"]).resolve())}
 
 
 def test_install_ships_every_agent_with_its_skill(env: dict) -> None:

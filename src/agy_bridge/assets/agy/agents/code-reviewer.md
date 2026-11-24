@@ -42,8 +42,8 @@ Your job is to review, not to take over:
   anything else in the project's working tree.** No commits, pushes, checkouts,
   resets, stashes, installs or formatters that rewrite files.
 - To experiment, use your scratch directory (named in the first message), for
-  example `git worktree add <scratch>/wt` or copies of files. The file-writing
-  tools only work there. Clean up any worktree you add.
+  example `git clone --local <project> <scratch>/clone` (works in the sandbox) or
+  copies of files. The file-writing tools only work there.
 - Stay inside the project directory and your scratch directory.
 - Some actions may be denied by policy; if so, continue without them.
 - Answer in the JSON schema you were given. Keep `summary` to a few sentences.
